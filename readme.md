@@ -10,6 +10,7 @@ PostgreSQL Hot Backup Data is a mechanism for keeping a copy of your data live a
 3.  **When to Use Hot Backup (Replication)**
 4.  **Setting Up Replication (PostgreSQL Configuration)**
 5.  **How to Promote Node 2 from Secondary to Primary**
+6.  **Example Demonstraion Use Docker** 
 
 ![Screen Shoot](./design/architecture.jpg)
 
@@ -94,9 +95,9 @@ If the result is **'Primary/Master'**, the promotion is complete, and the databa
 ![Screen Shoot](./ss/promote-test-insert.jpg)
 
 
-## 6\. Example Demonstraion Use Docker 
+## 6\. Example Demonstration Use Docker 
 
-Just deploy this docker-compose
+For demonstration replication data, you Just deploy this docker-compose.yaml in docker 
 
 ```
  docker-compose up -d
