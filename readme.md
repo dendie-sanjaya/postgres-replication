@@ -98,7 +98,8 @@ If the result is **'Primary/Master'**, the promotion is complete, and the databa
 
 Just deploy this docker-compose
 
-```docker-compose up -d
+```
+ docker-compose up -d
 ```
 
 ![Screen Shoot](./ss/1.jpg)
