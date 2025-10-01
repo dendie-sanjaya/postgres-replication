@@ -86,6 +86,9 @@ SELECT
     END AS current_role;
 ```
 
+![Screen Shoot](./ss/promote-check-sql.jpg)
+
+
 If the result is **'Primary/Master'**, the promotion is complete, and the database can now accept **write operations**.
 
 ![Screen Shoot](./ss/promote-test-insert.jpg)
