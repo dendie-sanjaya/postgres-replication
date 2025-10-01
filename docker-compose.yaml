@@ -1,0 +1,129 @@
+version: '3.8'
+
+services:
+  # ====================================================
+  # 1. POSTGRES NODE 1 (PRIMARY/MASTER)
+  # ====================================================
+  pg1:
+    image: postgres:13
+    container_name: pg_master
+    hostname: pg-master
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      REPLICATION_USER: ${REPLICATION_USER}
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD}
+    ports:
+      - "5432:5432" 
+    command: >
+     bash -c "
+        # 1. FASE 1: Inisialisasi Database Pertama Kali
+        # Gunakan 'exec' agar docker-entrypoint.sh benar-benar menjadi PID 1 sementara, 
+        # lalu fork ke background untuk eksekusi skrip konfigurasi.
+        # Catatan: 'docker-entrypoint.sh' akan menjalankan 'postgres'
+        /usr/local/bin/docker-entrypoint.sh postgres &
+        PID=\$!
+        
+        # 2. Tunggu PostgreSQL siap diakses
+        until pg_isready -h localhost -U \$POSTGRES_USER; do 
+          echo 'Waiting for initial pg-master ready...'; 
+          sleep 1; 
+        done
+        
+        # 3. --- Konfigurasi Penting (Setelah Server Up) ---
+        
+        # A. BUAT USER REPLIKASI & BERI HAK SELECT
+        psql -U \$POSTGRES_USER -d \$POSTGRES_DB -c \"DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${REPLICATION_USER}') THEN CREATE USER ${REPLICATION_USER} REPLICATION LOGIN ENCRYPTED PASSWORD '${REPLICATION_PASSWORD}'; END IF; END \$\$;\"
+        psql -U \$POSTGRES_USER -d \$POSTGRES_DB -c \"GRANT CONNECT ON DATABASE ${POSTGRES_DB} TO ${REPLICATION_USER};\"
+        psql -U \$POSTGRES_USER -d \$POSTGRES_DB -c \"GRANT USAGE ON SCHEMA public TO ${REPLICATION_USER};\"
+        psql -U \$POSTGRES_USER -d \$POSTGRES_DB -c \"GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${REPLICATION_USER};\"
+
+        # B. Set parameter konfigurasi
+        # *PERBAIKAN: Gunakan psql tanpa -d jika ALTER SYSTEM, karena tidak spesifik DB
+        psql -U \$POSTGRES_USER -c \"ALTER SYSTEM SET wal_level = 'replica';\"
+        psql -U \$POSTGRES_USER -c \"ALTER SYSTEM SET max_wal_senders = '10';\"
+        psql -U \$POSTGRES_USER -c \"ALTER SYSTEM SET max_replication_slots = '10';\"
+        psql -U \$POSTGRES_USER -c \"ALTER SYSTEM SET listen_addresses = '*';\"
+        
+        # C. Modifikasi pg_hba.conf
+        # *CATATAN: Pastikan ini ditempatkan sebelum entri 'local' atau 'host' yang lebih spesifik
+        echo 'host replication all 0.0.0.0/0 trust' >> /var/lib/postgresql/data/pg_hba.conf;
+        
+        # 4. FIX KRUSIAL: Hentikan server (PID yang sedang berjalan)
+        # Hentikan proses yang di-background secara paksa dan tunggu.
+        echo 'Stopping temporary PostgreSQL instance...'
+        kill -SIGTERM \$PID # Kirim sinyal TERM untuk penghentian yang bersih
+        wait \$PID         # Tunggu hingga proses background benar-benar selesai
+      "  
+     
+  # 5. FASE 2: Mulai Ulang (Restart) agar Konfigur
+    volumes:
+      - ./pg_master_data:/var/lib/postgresql/data    
+    restart: always
+    networks:
+      - pg_network
+
+
+  # ====================================================
+  # 2. POSTGRES NODE 2 (REPLICA/SECONDARY)
+  # ====================================================
+  pg2:
+    image: postgres:13
+    container_name: pg_replica
+    hostname: pg-replica
+    environment:
+      REPLICATION_USER: ${REPLICATION_USER}
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD}
+    ports:
+      - "5433:5432"
+    depends_on:
+      pg1:
+        condition: service_started
+    command: >
+      bash -c "
+        # 1. Tunggu Primary siap untuk koneksi PING admin
+        until pg_isready -h pg-master -U ${POSTGRES_USER}; do 
+          echo 'Waiting for pg-master admin to be ready...'; 
+          sleep 2; 
+        done
+        
+        # 2. Hapus data inisialisasi default secara agresif
+        rm -rf /var/lib/postgresql/data/*
+        rm -rf /var/lib/postgresql/data/.??*
+
+        # 3. Lakukan base backup dari Master. Coba lagi hingga koneksi REPLIKASI berhasil.
+        echo 'Starting pg_basebackup attempts in loop...'
+        export PGPASSWORD=${REPLICATION_PASSWORD}; 
+        
+        until pg_basebackup -h pg-master -U ${REPLICATION_USER} -D /var/lib/postgresql/data -P -R -w -c fast; do
+          echo 'pg_basebackup failed. Retrying in 5 seconds... (Waiting for Primary to accept replication)';
+          sleep 5;
+          # Jika gagal, hapus data yang mungkin sudah terlanjur dibuat
+          rm -rf /var/lib/postgresql/data/*
+          rm -rf /var/lib/postgresql/data/.??*
+        done
+
+        # 4. Hapus PGPASSWORD
+        unset PGPASSWORD
+        
+        # 5. Tambahkan konfigurasi agar klien dapat terhubung ke Replica
+        echo 'host all all 0.0.0.0/0 md5' >> /var/lib/postgresql/data/pg_hba.conf;
+        
+        # 6. Mulai server sebagai Standby
+        /usr/local/bin/docker-entrypoint.sh postgres
+      "
+    volumes:
+      - ./pg_replica_data:/var/lib/postgresql/data
+    restart: always
+    networks:
+      - pg_network
+
+---
+
+# ====================================================
+# VOLUMES DAN NETWORKS
+# ====================================================
+  networks:
+    pg_network:
+      driver: bridge
